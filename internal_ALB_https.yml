@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  EC2InstanceID:
+    Description: "Subnet ID EC2 Instance"
+    Type: AWS::EC2::Instance::Id
+    Default: "" 
+  ALBPrivateSubnetID1:
+    Description: "Subnet ID of private-subnet1"
+    Type: AWS::EC2::Subnet::Id
+    Default: "" #your private subnet
+  ALBPrivateSubnetID2:
+    Description: "Subnet ID of private-subnet2"
+    Type: AWS::EC2::Subnet::Id
+    Default: "" #your private subnet
+  HostZoneId:
+    Description: FQDN of the hosted zone
+    Type: AWS::Route53::HostedZone::Id
+    Default: ''
+  SubDomain:
+    Description: FQDN of the certificate
+    Type: String
+    Default: 'www.test.com' #domain address to be used
+  LoadBalancerCertificateARN:
+    Type: String
+    Default: arn:aws:acm: #your acm arn
+    Description: Enter certificate ARN; Use ACM to create a certificate before creating this stack
+Resources:
+# ------------------------------------------------------------#
+#  SecurityGroup for ALB
+# ------------------------------------------------------------#
+  ALBSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !ImportValue VPCID #change the name
+      GroupName: "test-alb-sg" #change the name
+      GroupDescription: "-"
+      Tags:
+        - Key: "Name"
+          Value: "test-alb-sg" #change the name
+# Rule
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+# ------------------------------------------------------------#
+#  Target Group
+# ------------------------------------------------------------#
+  TargetGroup: 
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties: 
+      VpcId: !ImportValue VPCID #change the name
+      Name: "test-alb-tg" #change the name
+      Protocol: HTTP
+      Port: 80
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: "/"
+      HealthCheckPort: "traffic-port"
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 10
+      Matcher: 
+        HttpCode: 200
+      Tags: 
+        - Key: Name
+          Value: "test-alb-tg" #change the name
+      TargetGroupAttributes: 
+        - Key: "deregistration_delay.timeout_seconds"
+          Value: 300
+        - Key: "stickiness.enabled"
+          Value: false
+        - Key: "stickiness.type"
+          Value: lb_cookie
+        - Key: "stickiness.lb_cookie.duration_seconds"
+          Value: 86400
+      Targets: 
+        - Id: !Ref EC2InstanceID
+          Port: 80
+# ------------------------------------------------------------#
+#  internal ALB
+# ------------------------------------------------------------#
+  internalALB: 
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties: 
+      Name: "test-alb" #change the name
+      Tags: 
+        - Key: Name
+          Value: !Sub "test-alb" #change the name
+      Scheme: "internal"
+      LoadBalancerAttributes: 
+        - Key: "deletion_protection.enabled"
+          Value: false
+        - Key: "idle_timeout.timeout_seconds"
+          Value: 60
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: 
+        - Ref: ALBPrivateSubnetID1
+        - Ref: ALBPrivateSubnetID2
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref LoadBalancerCertificateARN
+      DefaultActions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref internalALB
+# ------------------------------------------------------------#
+#  Route53
+# ------------------------------------------------------------#
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Sub '${HostZoneId}'
+      Comment: "DNS for ALB"
+      Name: !Sub '${SubDomain}'
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt 'internalALB.CanonicalHostedZoneID'
+        DNSName: !GetAtt 'internalALB.DNSName'
